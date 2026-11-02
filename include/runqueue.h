@@ -28,6 +28,9 @@ TCB *rq_dequeue(void);
 /* Number of threads currently queued. */
 size_t rq_size(void);
 
+/* Largest number of threads queued since the most recent rq_init(). */
+size_t rq_max_size(void);
+
 #ifdef __cplusplus
 }
 #endif

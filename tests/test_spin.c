@@ -50,6 +50,7 @@ int main(void) {
     saf_stats_t stats;
     saf_get_stats(&stats);
     CHECK(stats.preemptions > 0);
+    CHECK(stats.max_queue_len >= THREAD_COUNT);
     CHECK(min_iterations > 0);
     CHECK((double)max_iterations / (double)min_iterations < 1.2);
 

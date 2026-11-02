@@ -15,6 +15,7 @@ void thread_yield(void);
 void thread_exit(void);                              /* does not return */
 int  scheduler_run(void);                            /* 0 when all threads finished, <0 error */
 
+/* Scheduler counters are cumulative; max_queue_len is the lifetime high-water mark. */
 typedef struct { long switches, preemptions, deferred, ticks, max_queue_len; } saf_stats_t;
 void saf_get_stats(saf_stats_t *out);
 

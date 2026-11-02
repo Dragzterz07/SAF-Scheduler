@@ -70,3 +70,7 @@ TCB *rq_dequeue(void) {
 size_t rq_size(void) {
     return rq_count;
 }
+
+size_t rq_max_size(void) {
+    return rq_max_len;
+}

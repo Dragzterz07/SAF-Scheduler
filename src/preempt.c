@@ -3,6 +3,7 @@
 #include "tcb.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,9 @@ void preempt_enable(void) {
 }
 
 int saf_printf(const char *fmt, ...) {
+    if (fmt == NULL) {
+        return -EINVAL;
+    }
     preempt_disable();
     va_list ap;
     va_start(ap, fmt);

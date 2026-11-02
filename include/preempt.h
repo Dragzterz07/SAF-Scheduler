@@ -22,7 +22,7 @@ void sig_block_timer(void);
 /* Unblock SIGVTALRM on the calling thread/process via sigprocmask. */
 void sig_unblock_timer(void);
 
-/* printf wrapped in the preempt guard; safe to call under preemption (I7). */
+/* Guarded printf; returns vprintf's result, or -EINVAL if fmt is NULL. */
 int saf_printf(const char *fmt, ...);
 
 /* malloc/calloc/realloc/free wrapped in the preempt guard;

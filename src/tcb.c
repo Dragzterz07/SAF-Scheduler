@@ -27,6 +27,7 @@
 TCB *current = NULL;
 ucontext_t sched_ctx;
 long g_switches = 0;
+static size_t g_max_queue_len = 0;
 volatile sig_atomic_t g_preemptions = 0;
 volatile sig_atomic_t g_deferred = 0;
 
@@ -47,7 +48,12 @@ typedef struct {
 } guarded_stack_t;
 
 static int alloc_guarded_stack(guarded_stack_t *gs) {
+    errno = 0;
     long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) {
+        return -(errno != 0 ? errno : EINVAL);
+    }
+
     size_t map_len = STACK_SIZE + (size_t)page;
     char *map = mmap(NULL, map_len, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
@@ -78,6 +84,8 @@ static void free_mapped_stack(char *map, size_t map_len, unsigned vg_id) {
     if (vg_id != 0) {
         VALGRIND_STACK_DEREGISTER(vg_id);
     }
+#else
+    (void)vg_id;
 #endif
     munmap(map, map_len);
 }
@@ -292,6 +300,11 @@ int scheduler_run(void) {
 
     timer_disarm();
 
+    size_t run_max_queue_len = rq_max_size();
+    if (run_max_queue_len > g_max_queue_len) {
+        g_max_queue_len = run_max_queue_len;
+    }
+
     free_mapped_stack(sched_stack.map, sched_stack.map_len, sched_stack.vg_id);
     rq_destroy();
     rq_initialized = 0;
@@ -316,5 +329,5 @@ void saf_get_stats(saf_stats_t *out) {
     out->preemptions = g_preemptions;
     out->deferred = g_deferred;
     out->ticks = timer_ticks();
-    out->max_queue_len = 0;
+    out->max_queue_len = (long)g_max_queue_len;
 }

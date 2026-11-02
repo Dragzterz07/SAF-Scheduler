@@ -13,7 +13,7 @@ static void worker(void *arg) {
     int count = 0;
     while (g_infinite || count < g_max_iterations) {
         count++;
-        printf("Thread %d (ID: %d) - iteration %d\n", id, id, count);
+        saf_printf("Thread %d (ID: %d) - iteration %d\n", id, id, count);
         thread_yield();
     }
 }
@@ -34,6 +34,14 @@ static void spin_worker(void *arg) {
 static void usage(const char *prog) {
     fprintf(stderr, "Usage: %s [-i|--infinite] [iterations]\n", prog);
     fprintf(stderr, "       %s --spin N\n", prog);
+}
+
+static void print_stats(void) {
+    saf_stats_t stats;
+    saf_get_stats(&stats);
+    saf_printf("[Stats] switches=%ld preemptions=%ld deferred=%ld ticks=%ld max_queue_len=%ld\n",
+               stats.switches, stats.preemptions, stats.deferred,
+               stats.ticks, stats.max_queue_len);
 }
 
 static int run_spin(int n) {
@@ -60,6 +68,7 @@ static int run_spin(int n) {
         fprintf(stderr, "scheduler_run failed: %d\n", rc);
         return 1;
     }
+    print_stats();
     return 0;
 }
 
@@ -120,6 +129,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    print_stats();
     printf("[Done] All user threads completed successfully.\n");
     printf("[Cleanup] Memory cleanup complete. Stage 1 milestone passed!\n");
 

@@ -2,6 +2,7 @@
 #include "preempt_internal.h"
 #include "tcb.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,8 @@ static void worker_t1(void *arg) {
 }
 
 static void test_wrappers(void) {
+    CHECK(saf_printf(NULL) == -EINVAL);
+
     /* 1. saf_free(NULL) must be safe */
     saf_free(NULL);
 
