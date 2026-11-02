@@ -20,19 +20,26 @@ struct TCB {
     unsigned vg_id;
 };
 
+/* S3 CHANGE: current and sched_ctx are _Thread_local so each pthread worker
+ * has its own independent running-thread pointer and scheduler hub context. */
+
 /* current is non-NULL exactly while some thread is RUNNING (I10).
  * sched_ctx is the hub every thread switches through (I1); it exists
  * only for the duration of one scheduler_run() call. */
-extern TCB *current;
-extern ucontext_t sched_ctx;
+extern _Thread_local TCB *current;
+extern _Thread_local ucontext_t sched_ctx;
+
+/* g_switches, g_preemptions, g_deferred are per-worker counters.
+ * _Thread_local so workers don't race on writes.
+ * saf_get_stats() will aggregate them across workers in S3. */
 
 /* g_switches is written only from sched_loop, never from signal context,
  * so a plain long is fine. g_preemptions/g_deferred are written only
  * inside the signal handler (on_tick -> sched_on_tick), so they are
  * volatile sig_atomic_t (I6). */
-extern long g_switches;
-extern volatile sig_atomic_t g_preemptions;
-extern volatile sig_atomic_t g_deferred;
+extern _Thread_local long g_switches;
+extern _Thread_local volatile sig_atomic_t g_preemptions;
+extern _Thread_local volatile sig_atomic_t g_deferred;
 
 /* Called by timer.c's on_tick after it counts the tick (I6, I7): forces
  * a preemption of the RUNNING thread, or defers it if preempt_count > 0. */

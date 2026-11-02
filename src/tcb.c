@@ -24,12 +24,13 @@
 #define SAF_MAX_THREADS 1024
 #define DEFAULT_TICK_US 10000L
 
-TCB *current = NULL;
-ucontext_t sched_ctx;
-long g_switches = 0;
+// S3 CHANGE: _Thread_local gives each pthread worker its own private copy.
+_Thread_local TCB *current = NULL;
+_Thread_local ucontext_t sched_ctx;
+_Thread_local long g_switches = 0;
 static size_t g_max_queue_len = 0;
-volatile sig_atomic_t g_preemptions = 0;
-volatile sig_atomic_t g_deferred = 0;
+_Thread_local volatile sig_atomic_t g_preemptions = 0;
+_Thread_local volatile sig_atomic_t g_deferred = 0;
 
 #ifndef NDEBUG
 long g_tcb_destroyed = 0;
