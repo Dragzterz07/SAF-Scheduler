@@ -84,6 +84,8 @@ static void free_mapped_stack(char *map, size_t map_len, unsigned vg_id) {
     if (vg_id != 0) {
         VALGRIND_STACK_DEREGISTER(vg_id);
     }
+#else
+    (void)vg_id;
 #endif
     munmap(map, map_len);
 }
