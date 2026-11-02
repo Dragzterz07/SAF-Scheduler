@@ -1,0 +1,4 @@
+*.o
+scheduler
+build/
+vgcore.*
