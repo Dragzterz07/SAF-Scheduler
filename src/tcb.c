@@ -1,6 +1,8 @@
 #include "tcb.h"
 #include "sched_internal.h"
 #include "runqueue.h"
+#include "deque.h"
+#include "worker.h"
 #include "preempt.h"
 #include "preempt_internal.h"
 #include "timer.h"
@@ -8,6 +10,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -28,27 +31,30 @@
 _Thread_local TCB *current = NULL;
 _Thread_local ucontext_t sched_ctx;
 _Thread_local long g_switches = 0;
-static size_t g_max_queue_len = 0;
 _Thread_local volatile sig_atomic_t g_preemptions = 0;
 _Thread_local volatile sig_atomic_t g_deferred = 0;
+
+// Worker pool data structures
+static int g_num_workers = 1;
+static WSDeque **g_deques = NULL;
+
+// Termination and activity tracking
+static _Atomic int g_total_threads_created = 0;
+static _Atomic int g_total_threads_finished = 0;
+
+// Global statistics accumulation
+static _Atomic long g_total_switches = 0;
+static _Atomic long g_total_preemptions = 0;
+static _Atomic long g_total_deferred = 0;
+static size_t g_max_queue_len = 0;
 
 #ifndef NDEBUG
 long g_tcb_destroyed = 0;
 #endif
 
-static ucontext_t main_ctx;
 static int next_id = 1;
-static int rq_initialized = 0;
 
-typedef struct {
-    char *map;
-    size_t map_len;
-    void *sp;
-    size_t sp_len;
-    unsigned vg_id;
-} guarded_stack_t;
-
-static int alloc_guarded_stack(guarded_stack_t *gs) {
+int alloc_guarded_stack(guarded_stack_t *gs) {
     errno = 0;
     long page = sysconf(_SC_PAGESIZE);
     if (page <= 0) {
@@ -80,7 +86,7 @@ static int alloc_guarded_stack(guarded_stack_t *gs) {
     return 0;
 }
 
-static void free_mapped_stack(char *map, size_t map_len, unsigned vg_id) {
+void free_mapped_stack(char *map, size_t map_len, unsigned vg_id) {
 #ifdef HAS_VALGRIND
     if (vg_id != 0) {
         VALGRIND_STACK_DEREGISTER(vg_id);
@@ -94,6 +100,7 @@ static void free_mapped_stack(char *map, size_t map_len, unsigned vg_id) {
 static void tcb_destroy(TCB *t) {
     free_mapped_stack(t->map, t->map_len, t->vg_id);
     free(t);
+    atomic_fetch_add_explicit(&g_total_threads_finished, 1, memory_order_release);
 #ifndef NDEBUG
     g_tcb_destroyed++;
 #endif
@@ -103,11 +110,41 @@ static void tramp(void) {
     sigset_t set;
     sigemptyset(&set);
     sigaddset(&set, SIGVTALRM);
-    sigprocmask(SIG_UNBLOCK, &set, NULL);
+    pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 
     current->fn(current->arg);
     thread_exit();
 }
+
+// Try to pop from local deque first, or steal from peers if empty
+static TCB *sched_next_thread(int my_id) {
+    // 1. Try local deque (front gives fair FIFO round-robin)
+    TCB *t = deque_steal(g_deques[my_id]);
+    if (t != NULL) {
+        return t;
+    }
+
+    // 2. Steal from peers (FIFO)
+    if (g_num_workers > 1) {
+        for (int i = 1; i < g_num_workers; i++) {
+            int victim = (my_id + i) % g_num_workers;
+            t = deque_steal(g_deques[victim]);
+            if (t != NULL) {
+                return t;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+// Check if all user threads have finished
+static inline int all_threads_done(void) {
+    return atomic_load_explicit(&g_total_threads_finished, memory_order_acquire) ==
+           atomic_load_explicit(&g_total_threads_created, memory_order_acquire);
+}
+
+// Stage 3 CHANGE: Removed the original rq_deque with Work Stealing Deque.
 
 /* Runs on sched_ctx's own stack, with SIGVTALRM blocked (I2). The only
  * context switches anywhere are thread -> sched_ctx and sched_ctx ->
@@ -117,8 +154,17 @@ static void tramp(void) {
  * switched in, so a deferred preemption from one thread's turn can't
  * leak into the next thread's turn. */
 static void sched_loop(void) {
-    TCB *t;
-    while ((t = rq_dequeue()) != NULL) {
+    int my_id = current_worker_id;
+
+    while (!all_threads_done()) {
+        TCB *t = sched_next_thread(my_id);
+        if (t == NULL) {
+            /* Deque is empty and no task could be stolen right now.
+             * Yield this OS thread briefly to avoid hogging CPU while peers make progress. */
+            sched_yield();
+            continue;
+        }
+
         assert(current == NULL); /* I10: at most one RUNNING thread */
 
         current = t;
@@ -130,11 +176,16 @@ static void sched_loop(void) {
 
         current = NULL;
         if (t->state == SAF_READY) {
-            rq_enqueue(t);
+            deque_push(g_deques[my_id], t);
         } else if (t->state == SAF_FINISHED) {
             tcb_destroy(t);
         }
     }
+
+    // Accumulate local thread-local counters into globals upon worker exit
+    atomic_fetch_add_explicit(&g_total_switches, g_switches, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_total_preemptions, g_preemptions, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_total_deferred, g_deferred, memory_order_relaxed);
 }
 
 /* Called from timer.c's on_tick, i.e. from the signal handler (I6): only
@@ -157,17 +208,17 @@ void sched_on_tick(void) {
     swapcontext(&current->ctx, &sched_ctx); /* resumes here when rescheduled */
 }
 
+// Temporary registration queue before scheduler_run initializes deques
+static TCB *g_init_threads[SAF_MAX_THREADS];
+static int g_init_count = 0;
+
 int thread_create(void (*fn)(void *), void *arg) {
     if (fn == NULL) {
         return -EINVAL;
     }
 
-    if (!rq_initialized) {
-        int rc = rq_init(SAF_MAX_THREADS);
-        if (rc != 0) {
-            return rc;
-        }
-        rq_initialized = 1;
+    if (g_init_count >= SAF_MAX_THREADS) {
+        return -EAGAIN;
     }
 
     TCB *t = calloc(1, sizeof(TCB));
@@ -205,14 +256,19 @@ int thread_create(void (*fn)(void *), void *arg) {
 
     makecontext(&t->ctx, tramp, 0);
 
-    rc = rq_enqueue(t);
-    if (rc != 0) {
-        free_mapped_stack(gs.map, gs.map_len, gs.vg_id);
-        free(t);
-        next_id--;
-        return rc;
+    // If scheduler is already running with deques, push directly to current worker
+    if (g_deques != NULL) {
+        if (!deque_push(g_deques[current_worker_id], t)) {
+            free_mapped_stack(gs.map, gs.map_len, gs.vg_id);
+            free(t);
+            next_id--;
+            return -EAGAIN;
+        }
+    } else {
+        g_init_threads[g_init_count++] = t;
     }
 
+    atomic_fetch_add_explicit(&g_total_threads_created, 1, memory_order_relaxed);
     return t->id;
 }
 
@@ -267,51 +323,68 @@ int scheduler_run(void) {
         return -EBUSY;
     }
 
-    sig_block_timer();
+    g_num_workers = worker_get_count();
+    int num_cores = worker_get_online_cores();
 
-    guarded_stack_t sched_stack;
-    int rc = alloc_guarded_stack(&sched_stack);
-    if (rc != 0) {
-        sig_unblock_timer();
-        return rc;
+    // Allocate worker deques
+    g_deques = malloc((size_t)g_num_workers * sizeof(WSDeque *));
+    if (g_deques == NULL) {
+        return -ENOMEM;
     }
-
-    if (getcontext(&sched_ctx) == -1) {
-        int err = errno;
-        free_mapped_stack(sched_stack.map, sched_stack.map_len, sched_stack.vg_id);
-        sig_unblock_timer();
-        return -err;
-    }
-    sched_ctx.uc_stack.ss_sp = sched_stack.sp;
-    sched_ctx.uc_stack.ss_size = sched_stack.sp_len;
-    sched_ctx.uc_stack.ss_flags = 0;
-    sched_ctx.uc_link = &main_ctx;
-    makecontext(&sched_ctx, sched_loop, 0);
-
-    if (preempt_is_enabled()) {
-        rc = timer_arm(read_tick_us());
-        if (rc != 0) {
-            free_mapped_stack(sched_stack.map, sched_stack.map_len, sched_stack.vg_id);
-            sig_unblock_timer();
-            return rc;
+    for (int i = 0; i < g_num_workers; i++) {
+        g_deques[i] = deque_create();
+        if (g_deques[i] == NULL) {
+            for (int j = 0; j < i; j++) deque_destroy(g_deques[j]);
+            free(g_deques);
+            g_deques = NULL;
+            return -ENOMEM;
         }
     }
 
-    swapcontext(&main_ctx, &sched_ctx);
+    // Distribute initial threads across deques (round-robin)
+    size_t initial_q_len = (size_t)g_init_count;
+    for (int i = 0; i < g_init_count; i++) {
+        deque_push(g_deques[i % g_num_workers], g_init_threads[i]);
+    }
+    g_init_count = 0;
 
-    timer_disarm();
+    int preempt_on = preempt_is_enabled();
+    long tick_us = read_tick_us();
 
-    size_t run_max_queue_len = rq_max_size();
-    if (run_max_queue_len > g_max_queue_len) {
-        g_max_queue_len = run_max_queue_len;
+    // Spawn background worker pthreads (Workers 1 .. M-1)
+    worker_t *workers = NULL;
+    if (g_num_workers > 1) {
+        workers = malloc((size_t)(g_num_workers - 1) * sizeof(worker_t));
+        for (int i = 1; i < g_num_workers; i++) {
+            worker_spawn(&workers[i - 1], i, i % num_cores, sched_loop, preempt_on, tick_us);
+        }
     }
 
-    free_mapped_stack(sched_stack.map, sched_stack.map_len, sched_stack.vg_id);
-    rq_destroy();
-    rq_initialized = 0;
-    next_id = 1;
+    // Calling thread executes as Worker 0
+    worker_run_local(0, 0 % num_cores, sched_loop, preempt_on, tick_us);
 
-    sig_unblock_timer();
+    // Wait for background workers to complete
+    if (g_num_workers > 1) {
+        for (int i = 1; i < g_num_workers; i++) {
+            worker_join(&workers[i - 1]);
+        }
+        free(workers);
+    }
+
+    if (initial_q_len > g_max_queue_len) {
+        g_max_queue_len = initial_q_len;
+    }
+
+    // Free all deques
+    for (int i = 0; i < g_num_workers; i++) {
+        deque_destroy(g_deques[i]);
+    }
+    free(g_deques);
+    g_deques = NULL;
+
+    next_id = 1;
+    atomic_store_explicit(&g_total_threads_created, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_total_threads_finished, 0, memory_order_relaxed);
 
     return 0;
 }
@@ -326,9 +399,9 @@ void saf_get_stats(saf_stats_t *out) {
     if (out == NULL) {
         return;
     }
-    out->switches = g_switches;
-    out->preemptions = g_preemptions;
-    out->deferred = g_deferred;
+    out->switches = atomic_load_explicit(&g_total_switches, memory_order_relaxed);
+    out->preemptions = atomic_load_explicit(&g_total_preemptions, memory_order_relaxed);
+    out->deferred = atomic_load_explicit(&g_total_deferred, memory_order_relaxed);
     out->ticks = timer_ticks();
     out->max_queue_len = (long)g_max_queue_len;
 }

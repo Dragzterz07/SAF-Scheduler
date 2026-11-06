@@ -20,6 +20,18 @@ struct TCB {
     unsigned vg_id;
 };
 
+// Guarded stack representation with a low-end guard page
+typedef struct {
+    char *map;
+    size_t map_len;
+    void *sp;
+    size_t sp_len;
+    unsigned vg_id;
+} guarded_stack_t;
+
+int alloc_guarded_stack(guarded_stack_t *gs);
+void free_mapped_stack(char *map, size_t map_len, unsigned vg_id);
+
 /* S3 CHANGE: current and sched_ctx are _Thread_local so each pthread worker
  * has its own independent running-thread pointer and scheduler hub context. */
 

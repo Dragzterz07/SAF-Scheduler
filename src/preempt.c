@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,12 +26,12 @@ static void ensure_vtalrm_set(void) {
 
 void sig_block_timer(void) {
     ensure_vtalrm_set();
-    sigprocmask(SIG_BLOCK, &vtalrm_set, NULL);
+    pthread_sigmask(SIG_BLOCK, &vtalrm_set, NULL);
 }
 
 void sig_unblock_timer(void) {
     ensure_vtalrm_set();
-    sigprocmask(SIG_UNBLOCK, &vtalrm_set, NULL);
+    pthread_sigmask(SIG_UNBLOCK, &vtalrm_set, NULL);
 }
 
 void preempt_disable(void) {
