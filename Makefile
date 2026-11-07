@@ -52,6 +52,10 @@ test: $(TARGET) $(TEST_BINS)
 		./$$t || exit 1; \
 	done
 
+tsan:
+	$(MAKE) clean
+	$(MAKE) CFLAGS="$(CFLAGS) -fsanitize=thread" test
+
 test-mem: $(TARGET) $(TEST_BINS)
 	@chmod +x scripts/test_mem.sh
 	./scripts/test_mem.sh
@@ -62,4 +66,4 @@ test-long: build/tests/test_mixed
 clean:
 	rm -rf build $(TARGET)
 
-.PHONY: all test test-mem test-long clean
+.PHONY: all test tsan test-mem test-long clean

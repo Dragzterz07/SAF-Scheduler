@@ -31,7 +31,7 @@ void worker_pin_to_core(int core_id);
 // Returns the number of online CPU cores available.
 int worker_get_online_cores(void);
 
-// Reads configured worker count from SAF_WORKERS, or defaults to 1.
+// Reads configured worker count from SAF_WORKERS, capped at online CPU cores, or defaults to 1.
 int worker_get_count(void);
 
 // Run scheduler hub loop on the calling thread (used for Worker 0).

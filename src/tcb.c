@@ -323,8 +323,11 @@ int scheduler_run(void) {
         return -EBUSY;
     }
 
-    g_num_workers = worker_get_count();
     int num_cores = worker_get_online_cores();
+    g_num_workers = worker_get_count();
+    if (g_num_workers > num_cores) {
+        g_num_workers = num_cores;
+    }
 
     // Allocate worker deques
     g_deques = malloc((size_t)g_num_workers * sizeof(WSDeque *));

@@ -28,11 +28,12 @@ int worker_get_online_cores(void) {
 }
 
 int worker_get_count(void) {
+  int cores = worker_get_online_cores();
   const char *env = getenv("SAF_WORKERS");
   if (env != NULL) {
     int w = atoi(env);
     if (w > 0) {
-      return w;
+      return (w > cores) ? cores : w;
     }
   }
   return 1;

@@ -32,8 +32,8 @@ static void spin_worker(void *arg) {
 }
 
 static void usage(const char *prog) {
-    fprintf(stderr, "Usage: %s [-i|--infinite] [iterations]\n", prog);
-    fprintf(stderr, "       %s --spin N\n", prog);
+    fprintf(stderr, "Usage: %s [-w|--workers N] [-i|--infinite] [iterations]\n", prog);
+    fprintf(stderr, "       %s [-w|--workers N] --spin N\n", prog);
 }
 
 static void print_stats(void) {
@@ -73,7 +73,25 @@ static int run_spin(int n) {
 }
 
 int main(int argc, char *argv[]) {
+    int spin_n = 0;
+
     for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-w") == 0 || strcmp(argv[i], "--workers") == 0) {
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            char *end = NULL;
+            long w = strtol(argv[i + 1], &end, 10);
+            if (end == argv[i + 1] || *end != '\0' || w <= 0) {
+                usage(argv[0]);
+                return 1;
+            }
+            setenv("SAF_WORKERS", argv[i + 1], 1);
+            i++;
+            continue;
+        }
+
         if (strcmp(argv[i], "--spin") == 0) {
             if (i + 1 >= argc) {
                 usage(argv[0]);
@@ -85,7 +103,9 @@ int main(int argc, char *argv[]) {
                 usage(argv[0]);
                 return 1;
             }
-            return run_spin((int)n);
+            spin_n = (int)n;
+            i++;
+            continue;
         }
 
         if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--infinite") == 0) {
@@ -102,9 +122,15 @@ int main(int argc, char *argv[]) {
         g_max_iterations = (int)val;
     }
 
+    if (spin_n > 0) {
+        return run_spin(spin_n);
+    }
+
     printf("==================================================\n");
-    printf("   SAF-Scheduler: Stage 1 Cooperative Test        \n");
+    printf("   SAF-Scheduler: Stage 3 M:N Scheduler Test      \n");
     printf("==================================================\n");
+    const char *workers_env = getenv("SAF_WORKERS");
+    printf("[Config] Workers: %s\n", workers_env ? workers_env : "1 (default)");
     if (g_infinite) {
         printf("[Config] Running indefinitely (Ctrl+C to stop)\n");
     } else {
@@ -131,7 +157,7 @@ int main(int argc, char *argv[]) {
 
     print_stats();
     printf("[Done] All user threads completed successfully.\n");
-    printf("[Cleanup] Memory cleanup complete. Stage 1 milestone passed!\n");
+    printf("[Cleanup] Memory cleanup complete. Stage 3 passed!\n");
 
     return 0;
 }
